@@ -273,12 +273,12 @@ fork(void)
   struct proc *np;
   struct proc *p = myproc();
 
-  // Allocate process.
+  // 1. 分配进程资源，allocproc 返回时持有 np->lock
   if((np = allocproc()) == 0){
     return -1;
   }
 
-  // Copy user memory from parent to child.
+  // 2. 复制父进程的用户内存
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
@@ -286,19 +286,15 @@ fork(void)
   }
   np->sz = p->sz;
 
-  // --->>> 关键修复1：必须恢复父子关系链接 <<<---
-  np->parent = p;
+  // 3. 复制父进程的其他状态
+  *(np->trapframe) = *(p->trapframe);
+  np->trapframe->a0 = 0; // 子进程的 fork 返回 0
 
-  // --->>> 关键修复2：子进程必须继承追踪掩码 <<<---
+  // 4. 关键：建立父子关系和继承追踪掩码
+  np->parent = p;
   np->trace_mask = p->trace_mask;
 
-  // copy saved user registers.
-  *(np->trapframe) = *(p->trapframe);
-
-  // Cause fork to return 0 in the child.
-  np->trapframe->a0 = 0;
-
-  // increment reference counts on open file descriptors.
+  // 5. 复制文件描述符和当前工作目录
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
@@ -307,9 +303,12 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
-
-  // 在所有设置完成后，才设置状态并释放锁
+  
+  // 6. 关键：在所有操作完成后，才将进程设置为可运行
+  // 这确保了当调度器看到这个进程时，它已经是一个完全准备好的状态
   np->state = RUNNABLE;
+  
+  // 7. 释放锁，让进程可以被调度
   release(&np->lock);
 
   return pid;
@@ -344,6 +343,13 @@ reparent(struct proc *p)
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state
 // until its parent calls wait().
+// in kernel/proc.c
+
+// in kernel/proc.c
+
+// Exit the current process.  Does not return.
+// An exited process remains in the zombie state
+// until its parent calls wait().
 void
 exit(int status)
 {
@@ -366,14 +372,16 @@ exit(int status)
   end_op();
   p->cwd = 0;
 
-  // we might re-parent a child to init. we can't be precise about
-  // waking up init, since we can't acquire its lock once we've
-  // acquired any other proc lock. so wake up init whether that's
-  // necessary or not. init may miss this wakeup, but that seems
-  // harmless.
-  acquire(&initproc->lock);
-  wakeup1(initproc);
-  release(&initproc->lock);
+  // --------------------->>> 这是唯一的、最终的修改 <<<---------------------
+  // We might re-parent a child to init. Wake up init.
+  // But if our parent is init, we'll wake it up below.
+  // This avoids a deadlock if p->parent == initproc.
+  if(p->parent != initproc){
+    acquire(&initproc->lock);
+    wakeup1(initproc);
+    release(&initproc->lock);
+  }
+  // --------------------------------------------------------------------------
 
   // grab a copy of p->parent, to ensure that we unlock the same
   // parent we locked. in case our parent gives us away to init while

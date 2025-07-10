@@ -29,6 +29,8 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+// in kernel/trap.c
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -52,7 +54,8 @@ usertrap(void)
   
   if(r_scause() == 8){
     // system call
-
+    
+    // --->>> 第一次检查：进入系统调用前 <<<---
     if(p->killed)
       exit(-1);
 
@@ -65,14 +68,22 @@ usertrap(void)
     intr_on();
 
     syscall();
+
+    // --->>> 第二次检查：系统调用返回后，立即进行！ <<<---
+    // 这是你之前缺失的关键逻辑！
+    if(p->killed)
+      exit(-1);
+
   } else if((which_dev = devintr()) != 0){
-    // ok
+    // ok, this is a device interrupt.
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
 
+  // 这行检查仍然保留，用于处理其他类型的陷阱（比如缺页、非法指令）
+  // 和设备中断期间进程被杀死的情况。
   if(p->killed)
     exit(-1);
 

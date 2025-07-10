@@ -106,6 +106,10 @@ tags: $(OBJS) _init
 
 ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
 
+# Specific rule for sh.c to disable a warning in new GCC versions
+user/sh.o: user/sh.c user/user.h kernel/fcntl.h
+	$(CC) $(CFLAGS) -Wno-error=infinite-recursion -c user/sh.c -o $@
+	
 _%: %.o $(ULIB)
 	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $@ $^
 	$(OBJDUMP) -S $@ > $*.asm
@@ -147,9 +151,10 @@ UPROGS=\
 	$U/_stressfs\
 	$U/_usertests\
 	$U/_grind\
+	$U/_trace\
 	$U/_wc\
 	$U/_zombie\
-
+        $U/_sysinfotest\
 
 
 ifeq ($(LAB),trap)
@@ -196,7 +201,7 @@ ifndef CPUS
 CPUS := 3
 endif
 
-QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
+QEMUOPTS = -machine virt -bios none -kernel kernel/kernel -m 128M -smp $(CPUS) -nographic
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 

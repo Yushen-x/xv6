@@ -89,6 +89,10 @@ allocpid() {
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
+// in kernel/proc.c
+
+// in kernel/proc.c
+
 static struct proc*
 allocproc(void)
 {
@@ -106,12 +110,19 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
+  // 注意：这里不再设置 p->state，它的状态将在 fork 的最后被设置为 RUNNABLE
+  // p->lock 此时仍然被持有
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+    freeproc(p);
     release(&p->lock);
     return 0;
   }
+
+  // --->>> 关键点：初始化 trace_mask <<<---
+  // 防止复用的进程槽带有旧的追踪掩码
+  p->trace_mask = 0;
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -253,8 +264,8 @@ growproc(int n)
   return 0;
 }
 
-// Create a new process, copying the parent.
-// Sets up child kernel stack to return as if from fork() system call.
+// in kernel/proc.c
+
 int
 fork(void)
 {
@@ -275,7 +286,11 @@ fork(void)
   }
   np->sz = p->sz;
 
+  // --->>> 关键修复1：必须恢复父子关系链接 <<<---
   np->parent = p;
+
+  // --->>> 关键修复2：子进程必须继承追踪掩码 <<<---
+  np->trace_mask = p->trace_mask;
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -293,8 +308,8 @@ fork(void)
 
   pid = np->pid;
 
+  // 在所有设置完成后，才设置状态并释放锁
   np->state = RUNNABLE;
-
   release(&np->lock);
 
   return pid;
@@ -692,4 +707,17 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+int
+proc_count(void)
+{
+  int count = 0;
+  struct proc *p;
+  for(p = proc; p < &proc[NPROC]; p++) {
+    if(p->state != UNUSED) {
+      count++;
+    }
+  }
+  return count;
 }

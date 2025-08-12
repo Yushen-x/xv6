@@ -27,32 +27,43 @@ statscopyin(char *buf, int sz) {
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
 int
-copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
+copyinstr_new(char *dst, uint64 srcva, uint64 max)
 {
+  stats.ncopyinstr++;
   struct proc *p = myproc();
-
-  if (srcva >= p->sz || srcva+len >= p->sz || srcva+len < srcva)
+  int got_null = 0;
+  
+  for(int i = 0; i < max; i++){
+    // 在循环的每一步都检查地址！
+    if(srcva + i >= p->sz) {
+      return -1;
+    }
+    
+    char c = *(char*)(srcva + i);
+    dst[i] = c;
+    if(c == 0){
+      got_null = 1;
+      break;
+    }
+  }
+  
+  if(!got_null)
     return -1;
-  memmove((void *) dst, (void *)srcva, len);
-  stats.ncopyin++;   // XXX lock
+    
   return 0;
 }
 
-// Copy a null-terminated string from user to kernel.
-// Copy bytes to dst from virtual address srcva in a given page table,
-// until a '\0', or max.
-// Return 0 on success, -1 on error.
 int
-copyinstr_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+copyin_new(char *dst, uint64 srcva, uint64 len)
 {
+  stats.ncopyin++;
   struct proc *p = myproc();
-  char *s = (char *) srcva;
   
-  stats.ncopyinstr++;   // XXX lock
-  for(int i = 0; i < max && srcva + i < p->sz; i++){
-    dst[i] = s[i];
-    if(s[i] == '\0')
-      return 0;
+
+  if (srcva >= p->sz || srcva + len > p->sz || srcva + len < srcva) {
+    return -1;
   }
-  return -1;
+  
+  memmove(dst, (void*)srcva, len);
+  return 0;
 }

@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -376,67 +378,141 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
+// 文件: kernel/vm.c
+
+// 在 kernel/vm.c 文件中
+
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  // pagetable 参数现在被忽略了。
+  return copyin_new(dst, srcva, len);
 }
 
-// Copy a null-terminated string from user to kernel.
-// Copy bytes to dst from virtual address srcva in a given page table,
-// until a '\0', or max.
-// Return 0 on success, -1 on error.
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  // pagetable 参数现在被忽略了。
+  return copyinstr_new(dst, srcva, max);
+}
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
+
+// Forward declaration for the recursive helper function.
+void vmprint_recursive(pagetable_t, int);
+
+// Print the page table of a process.
+void
+vmprint(pagetable_t pagetable)
+{
+  // Note: %p automatically adds the "0x" prefix.
+  printf("page table %p\n", pagetable);
+  vmprint_recursive(pagetable, 1);
+}
+
+// A recursive helper function for vmprint.
+void
+vmprint_recursive(pagetable_t pagetable, int level)
+{
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V){
+      for (int j = 0; j < level; j++) {
+        printf(".. ");
       }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
+      uint64 pa = PTE2PA(pte);
+      printf("%d: pte %p pa %p\n", i, pte, pa);
 
-    srcva = va0 + PGSIZE;
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        vmprint_recursive((pagetable_t)pa, level + 1);
+      }
+    }
   }
-  if(got_null){
+}
+
+// Create a new kernel page table.
+// based on kvminit().
+pagetable_t
+kvmcreate()
+{
+  pagetable_t kpgtbl;
+
+  kpgtbl = uvmcreate();
+  if(kpgtbl == 0)
     return 0;
-  } else {
-    return -1;
+
+  // uart registers
+  if(mappages(kpgtbl, UART0, PGSIZE, UART0, PTE_R | PTE_W) != 0)
+    goto fail;
+  // virtio mmio disk interface
+  if(mappages(kpgtbl, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W) != 0)
+    goto fail;
+  // PLIC
+  if(mappages(kpgtbl, PLIC, 0x400000, PLIC, PTE_R | PTE_W) != 0)
+    goto fail;
+  // map kernel text executable and read-only.
+  if(mappages(kpgtbl, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X) != 0)
+    goto fail;
+  // map kernel data and the physical RAM we'll make use of.
+  if(mappages(kpgtbl, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W) != 0)
+    goto fail;
+  // map the trampoline for trap entry/exit.
+  if(mappages(kpgtbl, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X) != 0)
+    goto fail;
+  
+  return kpgtbl;
+
+fail:
+  freewalk(kpgtbl); 
+  return 0;
+}
+
+// Recursively free page-table pages.
+//- Does not free leaf pages.
+void
+kvmfreewalk(pagetable_t pagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      kvmfreewalk((pagetable_t)child);
+      pagetable[i] = 0;
+    }
   }
+  kfree((void*)pagetable);
+}
+
+
+int
+uvmcopy_to_kpgtbl(pagetable_t kpgtbl, pagetable_t upgtbl, uint64 oldsz, uint64 newsz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+
+  // 将 oldsz 向上对齐到页面边界。
+  for(i = PGROUNDUP(oldsz); i < newsz; i += PGSIZE){
+    // 查找用户虚拟地址对应的PTE。
+    if((pte = walk(upgtbl, i, 0)) == 0)
+      panic("uvmcopy_to_kpgtbl: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("uvmcopy_to_kpgtbl: page not present");
+
+    // 从用户PTE中获取物理地址和标志位。
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
+
+    // 关键操作：清除PTE_U标志位。
+    flags &= ~PTE_U;
+    
+    // 将这个物理页面以相同的虚拟地址映射到内核页表中。
+    if(mappages(kpgtbl, i, PGSIZE, pa, flags) != 0){
+      uvmunmap(kpgtbl, PGROUNDUP(oldsz), (i - PGROUNDUP(oldsz)) / PGSIZE, 0);
+      return -1;
+    }
+  }
+  return 0;
 }

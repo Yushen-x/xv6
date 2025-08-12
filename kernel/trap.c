@@ -33,6 +33,48 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
+
+void
+switchTrapframe(struct trapframe *dst, struct trapframe *src)
+{
+  dst->kernel_satp   = src->kernel_satp;
+  dst->kernel_sp     = src->kernel_sp;
+  dst->kernel_trap   = src->kernel_trap;
+  dst->epc           = src->epc;
+  dst->kernel_hartid = src->kernel_hartid;
+  dst->ra            = src->ra;
+  dst->sp            = src->sp;
+  dst->gp            = src->gp;
+  dst->tp            = src->tp;
+  dst->t0            = src->t0;
+  dst->t1            = src->t1;
+  dst->t2            = src->t2;
+  dst->s0            = src->s0;
+  dst->s1            = src->s1;
+  dst->a0            = src->a0;
+  dst->a1            = src->a1;
+  dst->a2            = src->a2;
+  dst->a3            = src->a3;
+  dst->a4            = src->a4;
+  dst->a5            = src->a5;
+  dst->a6            = src->a6;
+  dst->a7            = src->a7;
+  dst->s2            = src->s2;
+  dst->s3            = src->s3;
+  dst->s4            = src->s4;
+  dst->s5            = src->s5;
+  dst->s6            = src->s6;
+  dst->s7            = src->s7;
+  dst->s8            = src->s8;
+  dst->s9            = src->s9;
+  dst->s10           = src->s10;
+  dst->s11           = src->s11;
+  dst->t3            = src->t3;
+  dst->t4            = src->t4;
+  dst->t5            = src->t5;
+  dst->t6            = src->t6;
+}
+
 void
 usertrap(void)
 {
@@ -65,9 +107,28 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
-    // ok
-  } else {
+  } else if((which_dev = devintr()) != 0){  // <-- 看这里，第一个 else if
+    // This is a device interrupt.
+    // 我们把所有设备中断的逻辑都放在这个花括号里
+    
+    if (which_dev == 2 && p->waitReturn == 0) { // Timer interrupt
+      if (p->interval > 0) {
+        p->spend = p->spend + 1;
+        if (p->spend >= p->interval) { // 使用 >= 更稳健
+          switchTrapframe(p->trapframeSave, p->trapframe);
+          p->spend = 0;
+          p->trapframe->epc = (uint64)p->handler;
+          p->waitReturn = 1;
+        }
+      }
+    }
+    
+    // give up the CPU if this is a timer interrupt.
+    if(which_dev == 2)
+      yield();
+
+  } else { // <-- 现在这个 else 能正确地和 if(r_scause() == 8) 配对了
+    // This is an unexpected trap.
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
@@ -76,10 +137,7 @@ usertrap(void)
   if(p->killed)
     exit(-1);
 
-  // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
-
+  // return to user space
   usertrapret();
 }
 

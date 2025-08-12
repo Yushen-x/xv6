@@ -1,28 +1,32 @@
-1. According to the RISC-V calling convention, function arguments are passed in registers a0-a7. For the call to printf in main, the value 13 is loaded into the a2 register.
-
-2. In the assembly code for main, there is no call to function f, nor is there a call to function g. The compiler has performed aggressive optimizations (specifically, function inlining and constant folding). It determined at compile time that the expression f(8)+1 evaluates to the constant value 12. As a result, instead of generating instructions to call f and g, the compiler simply placed the final value 12 into the a1 register with the instruction "li a1, 12" before calling printf.
-
-3. In the assembly file user/call.asm, we can see "000000000000063a <printf>:" which indicates that the printf function is located at address 0x63a.
-
-4. The 'ra' (return address) register holds the address of the instruction that should be executed after a function call returns. In main, the "jalr" instruction to call printf is at address 0x24. The next instruction is at address 0x28. Therefore, the value stored in ra will be 0x28.
-
-5.
-Output: HE110 World
-
-Explanation:
-- The %x format specifier prints the hexadecimal representation of 57616, which is E110.
-- The %s format specifier expects a pointer to a null-terminated string. We provide it the address of integer i.
-- On a little-endian machine, the integer 0x00646c72 is stored in memory byte-by-byte as: 72, 6c, 64, 00.
-- Interpreted as an ASCII string, 0x72 is 'r', 0x6c is 'l', 0x64 is 'd', and 0x00 is the null terminator. So, %s prints "rld".
-- The final output is "HE110 World".
-
+Question: Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+Answer:
+According to the RISC-V calling convention, the first eight integer or pointer arguments to a function are passed in registers a0 through a7.
+In the specific call printf("%d %d\n", f(8, 9), 13), the arguments are assigned as follows:
+The address of the format string "%d %d\n" is the first argument, so it is placed in register a0.
+The return value of f(8, 9) is the second argument, so it is placed in register a1.
+The integer 13 is the third argument, therefore it is held in register a2.
+Question: Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.)
+Answer:
+There are no direct calls (like jal or call instructions) to functions f or g within the assembly code of main. This is because the compiler has performed an optimization known as function inlining. Since f and g are very simple, the compiler directly embedded their functionality (simple addition) into main's code to avoid the performance overhead of making a function call.
+Question: At what address is the function printf located?
+Answer:
+The exact numerical address of the printf function is not hardcoded in the call.asm file. The assembly code refers to printf using a symbolic label. The final address is determined at runtime by the dynamic linker, which resolves the symbol's location when the program is loaded into memory.
+Question: What value is in the register ra just after the jalr to printf in main?
+Answer:
+The ra register is the "return address" register. Immediately after the jalr instruction to printf executes, the ra register will contain the memory address of the very next instruction following the jalr instruction. This allows the program to resume execution in main right after printf completes its task.
+Question: Run the code unsigned int i = 0x00646c72; printf("H%x Wo%s", 57616, &i);. What is the output? If the RISC-V were big-endian what would you set i to in order to yield the same output? Would you need to change 57616?
+Answer:
+The output is: He110 World.
+This happens because 57616 in hexadecimal is e110.
+The RISC-V is little-endian, so the int 0x00646c72 is stored in memory with its least significant byte first, as the byte sequence: 72, 6c, 64, 00.
+When %s treats the address of i as a string, it reads these bytes, which according to the ASCII table are 'r', 'l', 'd', and the null terminator (\0).
 For a big-endian machine:
-- To get the same output, the bytes in memory must still be in the order 72, 6c, 64, 00.
-- On a big-endian machine, this byte order corresponds to the integer value 0x726c6400. So, i would need to be set to 0x726c6400.
-- The value 57616 would not need to be changed, as its conversion to a hexadecimal string is independent of the machine's endianness.
-
-
-6.
-What is printed after 'y=': An unpredictable/garbage value.
-
-Why this happens: The printf function is called with a format string that expects two integer arguments ("x=%d y=%d"), but only one integer (3) is provided. According to the calling convention, the first integer argument (3) is placed in register a1. The printf function then expects the second integer argument to be in register a2. Since the caller did not place a value in a2, it will contain whatever leftover value was in that register from previous computations. Printf will then print this garbage value as an integer.
+To get the same output, you must set i to 0x726c6400. This ensures the bytes are laid out in memory in the required 72 6c 64 00 sequence on a big-endian system.
+You would not need to change the value 57616. It is a numerical value, and its interpretation by %x is not dependent on the machine's endianness.
+Question: In printf("x=%d y=%d", 3);, what is going to be printed after 'y='? Why does this happen?
+Answer:
+What is printed: A non-specific, unpredictable garbage value is printed after y=.
+Why this happens: The printf function is guided by its format string "x=%d y=%d", which tells it to expect two integer arguments. However, the code only provides one argument (3).
+printf correctly finds the first argument (3) in the designated argument register (a1).
+When it needs to print the value for y, it proceeds to look for the second argument in the next argument register (a2).
+Because our code never placed a value in a2, that register contains whatever leftover data (garbage) was there from a previous, unrelated operation. printf blindly reads this garbage value and prints it as an integer.

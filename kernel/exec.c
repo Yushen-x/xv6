@@ -20,6 +20,11 @@ exec(char *path, char **argv)
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
   struct proc *p = myproc();
+  
+  p->interval = 0;
+  p->handler = 0;
+  p->spend = 0;
+  p->waitReturn = 0;
 
   begin_op();
 

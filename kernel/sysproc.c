@@ -70,6 +70,7 @@ sys_sleep(void)
     sleep(&ticks, &tickslock);
   }
   release(&tickslock);
+  backtrace();
   return 0;
 }
 
@@ -94,4 +95,32 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_sigalarm(void){
+  struct proc* p = myproc();
+  int n;
+  uint64 handler;
+
+  if(argint(0, &n) < 0)
+    return -1;
+  p->interval = n;
+
+  if(argaddr(1, &handler) < 0)
+    return -1;
+  p->handler = (void (*)())handler;
+
+  // 为 test0 重置计数器
+  p->spend = 0; 
+
+  return 0;
+}
+
+uint64
+sys_sigreturn(void){
+  struct proc* myProc = myproc();
+  switchTrapframe(myProc->trapframe, myProc->trapframeSave); // 从备份中恢复现场
+  myProc->waitReturn = 0; // 清除“请勿打扰”标志
+  return 0;
 }

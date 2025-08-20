@@ -176,7 +176,8 @@ UPROGS=\
 	$U/_wc\
 	$U/_zombie\
 
-
+user/sh.o: user/sh.c
+	$(CC) $(CFLAGS) -Wno-error=infinite-recursion -c -o $@ $<
 
 
 ifeq ($(LAB),$(filter $(LAB), pgtbl lock))

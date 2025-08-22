@@ -8,6 +8,9 @@
 #define NBUCKET 5
 #define NKEYS 100000
 
+// 为每个桶定义一把锁，实现细粒度锁
+pthread_mutex_t locks[NBUCKET];
+
 struct entry {
   int key;
   int value;
@@ -25,54 +28,42 @@ now()
  return tv.tv_sec + tv.tv_usec / 1000000.0;
 }
 
-static void 
-insert(int key, int value, struct entry **p, struct entry *n)
-{
-  struct entry *e = malloc(sizeof(struct entry));
-  e->key = key;
-  e->value = value;
-  e->next = n;
-  *p = e;
-}
-
-static 
+static
 void put(int key, int value)
 {
   int i = key % NBUCKET;
 
-  // is the key already present?
-  struct entry *e = 0;
-  for (e = table[i]; e != 0; e = e->next) {
-    if (e->key == key)
-      break;
-  }
-  if(e){
-    // update the existing key.
-    e->value = value;
-  } else {
-    // the new is new.
-    insert(key, value, &table[i], table[i]);
-  }
+  // 1. 在锁外面准备好新节点，这是性能优化的关键！
+  struct entry *e = malloc(sizeof(struct entry));
+  e->key = key;
+  e->value = value;
+
+  // 2. 加锁，进入尽可能小的临界区
+  pthread_mutex_lock(&locks[i]);
+
+  // 3. 只保护真正需要保护的共享数据操作
+  e->next = table[i];
+  table[i] = e;
+
+  // 4. 立即解锁
+  pthread_mutex_unlock(&locks[i]);
 }
 
 static struct entry*
 get(int key)
 {
   int i = key % NBUCKET;
-
-
   struct entry *e = 0;
   for (e = table[i]; e != 0; e = e->next) {
     if (e->key == key) break;
   }
-
   return e;
 }
 
 static void *
 put_thread(void *xa)
 {
-  int n = (int) (long) xa; // thread number
+  int n = (int) (long) xa;
   int b = NKEYS/nthread;
 
   for (int i = 0; i < b; i++) {
@@ -85,7 +76,7 @@ put_thread(void *xa)
 static void *
 get_thread(void *xa)
 {
-  int n = (int) (long) xa; // thread number
+  int n = (int) (long) xa;
   int missing = 0;
 
   for (int i = 0; i < NKEYS; i++) {
@@ -114,10 +105,13 @@ main(int argc, char *argv[])
   for (int i = 0; i < NKEYS; i++) {
     keys[i] = random();
   }
+  
+  // 在创建线程前，初始化所有的锁
+  for (int i = 0; i < NBUCKET; i++) {
+    pthread_mutex_init(&locks[i], NULL);
+  }
 
-  //
   // first the puts
-  //
   t0 = now();
   for(int i = 0; i < nthread; i++) {
     assert(pthread_create(&tha[i], NULL, put_thread, (void *) (long) i) == 0);
@@ -130,9 +124,7 @@ main(int argc, char *argv[])
   printf("%d puts, %.3f seconds, %.0f puts/second\n",
          NKEYS, t1 - t0, NKEYS / (t1 - t0));
 
-  //
   // now the gets
-  //
   t0 = now();
   for(int i = 0; i < nthread; i++) {
     assert(pthread_create(&tha[i], NULL, get_thread, (void *) (long) i) == 0);

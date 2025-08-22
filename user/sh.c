@@ -71,11 +71,15 @@ runcmd(struct cmd *cmd)
   default:
     panic("runcmd");
 
+  // 这是递归的终止条件 (base case)
+  // 当命令是一个简单的执行命令时，调用 exec()
+  // exec() 会替换当前进程的镜像，不会返回，因此递归在这里结束
   case EXEC:
     ecmd = (struct execcmd*)cmd;
     if(ecmd->argv[0] == 0)
       exit(1);
     exec(ecmd->argv[0], ecmd->argv);
+    // 只有当 exec 失败时，才会执行下面的代码
     fprintf(2, "exec %s failed\n", ecmd->argv[0]);
     break;
 
@@ -86,15 +90,16 @@ runcmd(struct cmd *cmd)
       fprintf(2, "open %s failed\n", rcmd->file);
       exit(1);
     }
+    // 递归调用 runcmd 来执行被重定向的命令
     runcmd(rcmd->cmd);
     break;
 
   case LIST:
     lcmd = (struct listcmd*)cmd;
     if(fork1() == 0)
-      runcmd(lcmd->left);
+      runcmd(lcmd->left); // 递归执行左边的命令
     wait(0);
-    runcmd(lcmd->right);
+    runcmd(lcmd->right);  // 然后执行右边的命令
     break;
 
   case PIPE:
@@ -106,14 +111,14 @@ runcmd(struct cmd *cmd)
       dup(p[1]);
       close(p[0]);
       close(p[1]);
-      runcmd(pcmd->left);
+      runcmd(pcmd->left); // 递归执行管道左边的命令
     }
     if(fork1() == 0){
       close(0);
       dup(p[0]);
       close(p[0]);
       close(p[1]);
-      runcmd(pcmd->right);
+      runcmd(pcmd->right); // 递归执行管道右边的命令
     }
     close(p[0]);
     close(p[1]);
@@ -124,9 +129,11 @@ runcmd(struct cmd *cmd)
   case BACK:
     bcmd = (struct backcmd*)cmd;
     if(fork1() == 0)
-      runcmd(bcmd->cmd);
+      runcmd(bcmd->cmd); // 递归执行后台命令
     break;
   }
+  
+  // 确保函数在所有非 exec/fork 的路径上都能退出
   exit(0);
 }
 

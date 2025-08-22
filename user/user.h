@@ -11,7 +11,7 @@ int write(int, const void*, int);
 int read(int, void*, int);
 int close(int);
 int kill(int);
-int exec(char*, char**);
+int exec(char*, char**) __attribute__((noreturn));
 int open(const char*, int);
 int mknod(const char*, short, short);
 int unlink(const char*);

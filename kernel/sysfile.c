@@ -291,24 +291,52 @@ sys_open(void)
   struct file *f;
   struct inode *ip;
   int n;
+  int depth = 0; // 1. 新增：用于防止符号链接无限循环的深度计数器
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
     return -1;
 
-  begin_op();
-
   if(omode & O_CREATE){
+    begin_op();
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
       end_op();
       return -1;
     }
   } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
+    // 2. 将原来的 namei 调用替换为下面的 while 循环
+    while(1){
+      begin_op();
+      if((ip = namei(path)) == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+
+      // 3. 核心：检查是否是需要解引用的符号链接
+      if(ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)){
+        if(++depth > 10){ // 防止无限循环
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        // 读取符号链接的内容（即目标路径）到 path 变量中
+        if(readi(ip, 0, (uint64)path, 0, MAXPATH) <= 0){
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        // 释放当前 inode，结束本次事务，准备下一次循环
+        iunlockput(ip);
+        end_op();
+        // 继续下一次 while 循环，使用新的 path
+      } else {
+        // 如果不是符号链接，或者指定了 O_NOFOLLOW，则跳出循环
+        // 此时我们持有 ip 的锁，并且仍在事务中
+        break;
+      }
     }
-    ilock(ip);
+    // 4. 从这里开始，是原来的逻辑，处理已经找到的最终 inode (ip)
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -482,5 +510,36 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  // 1. 从用户空间获取两个参数：目标路径和链接路径
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  // 2. 创建一个新文件，但类型指定为 T_SYMLINK
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+
+  // 3. 将目标路径字符串直接写入这个新 inode 的数据区
+  //    对于短路径，这可以避免分配额外的数据块
+  if(writei(ip, 0, (uint64)target, 0, strlen(target)+1) < 0){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  // 4. 释放 inode 并结束操作
+  iunlockput(ip);
+  end_op();
   return 0;
 }

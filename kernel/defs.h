@@ -42,6 +42,8 @@ struct inode*   ialloc(uint, short);
 struct inode*   idup(struct inode*);
 void            iinit();
 void            ilock(struct inode*);
+void            locki(struct inode*);   // <--- 在这里添加这一行
+void            unlocki(struct inode*); // <--- 在这里添加这一行
 void            iput(struct inode*);
 void            iunlock(struct inode*);
 void            iunlockput(struct inode*);
@@ -53,6 +55,12 @@ int             readi(struct inode*, int, uint64, uint, uint);
 void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, int, uint64, uint, uint);
 void            itrunc(struct inode*);
+
+
+
+// mmap.c
+uint64          sys_mmap(void);
+uint64          sys_munmap(void);
 
 // ramdisk.c
 void            ramdiskinit(void);

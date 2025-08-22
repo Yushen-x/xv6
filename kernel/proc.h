@@ -80,11 +80,25 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+
+
+#define NVMA 16
+struct vma {
+  int used;           // 是否使用中
+  uint64 addr;        // 起始地址
+  int length;         // 长度
+  int prot;           // 保护权限
+  int flags;          // 标志
+  struct file *file;  // 映射的文件
+  int offset;         // 文件偏移
+};
+
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
 struct proc {
   struct spinlock lock;
+  struct vma vma[NVMA]; 
 
   // p->lock must be held when using these:
   enum procstate state;        // Process state

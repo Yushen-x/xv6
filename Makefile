@@ -176,7 +176,9 @@ UPROGS=\
 	$U/_wc\
 	$U/_zombie\
 
-
+# an extra CFLAG for sh.c to suppress a GCC warning
+$U/sh.o: $U/sh.c
+	$(CC) $(CFLAGS) -Wno-infinite-recursion -c -o $@ $<
 
 
 ifeq ($(LAB),$(filter $(LAB), pgtbl lock))

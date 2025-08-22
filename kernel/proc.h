@@ -1,4 +1,8 @@
 // Saved registers for kernel context switches.
+#ifndef __PROC_H__
+#define __PROC_H__
+
+#include "spinlock.h"
 struct context {
   uint64 ra;
   uint64 sp;
@@ -80,7 +84,8 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
-enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+// Process state
+enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
 struct proc {
@@ -104,3 +109,5 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
+
+#endif // __PROC_H__

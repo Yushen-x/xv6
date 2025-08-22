@@ -52,7 +52,6 @@ usertrap(void)
   
   if(r_scause() == 8){
     // system call
-
     if(p->killed)
       exit(-1);
 
@@ -66,11 +65,25 @@ usertrap(void)
 
     syscall();
   } else if((which_dev = devintr()) != 0){
-    // ok
+    // ok, it's a device interrupt.
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    // a page fault or some other unexpected exception.
+
+    // our COW logic should only handle write page faults (scause=15)
+    // on pages that are marked as COW pages.
+    if(r_scause() == 15 && uvmcheckcowpage(r_stval())) {
+      if(uvmcowcopy(r_stval()) == -1) {
+        // out of memory, kill the process
+        p->killed = 1;
+      }
+    } else {
+      // any other exception is unexpected and thus fatal.
+      // this includes stacktest's read fault (scause=13)
+      // and genuine protection faults.
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
   }
 
   if(p->killed)

@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "proc.h"
+#include "kalloc.h"
 
 /*
  * the kernel's page table.
@@ -181,14 +183,17 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+      continue;
+    
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      continue;
+
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
+
     if(do_free){
       uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      kfree((void*)pa); // kfree 会处理引用计数
     }
     *pte = 0;
   }
@@ -235,14 +240,15 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
     return oldsz;
 
   oldsz = PGROUNDUP(oldsz);
-  for(a = oldsz; a < newsz; a += PGSIZE){
+for(a = PGROUNDUP(oldsz); a < newsz; a += PGSIZE){
     mem = kalloc();
     if(mem == 0){
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
+    PA2PGREF(mem) = 1; // <--- 添加这一行来初始化引用计数
     memset(mem, 0, PGSIZE);
-    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U) != 0){
       kfree(mem);
       uvmdealloc(pagetable, a, oldsz);
       return 0;
@@ -311,22 +317,29 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    
+    // 1. 将父进程的页表项设置为只读+COW
+    *pte = (*pte & ~PTE_W) | PTE_COW;
+    
+    // 2. 为子进程映射同一个物理页，权限也必须是只读+COW
+    //    这是之前导致崩溃的BUG所在！子进程的PTE也必须有PTE_COW标志。
+    uint child_flags = (flags & ~PTE_W) | PTE_COW;
+
+    if(mappages(new, i, PGSIZE, pa, child_flags) != 0){
       goto err;
     }
+    
+    // 3. 增加物理页的引用计数
+    krefpage((void *)pa);
   }
   return 0;
 
@@ -357,6 +370,10 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   uint64 n, va0, pa0;
 
   while(len > 0){
+      if(uvmcheckcowpage(dstva)) {
+      if(uvmcowcopy(dstva) == -1)
+        return -1;
+    }
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
@@ -438,5 +455,63 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+// 检查一个虚拟地址是否是COW页
+int
+uvmcheckcowpage(uint64 va)
+{
+  pte_t *pte;
+  struct proc *p = myproc();
+
+  if (va >= p->sz)
+    return 0;
+
+  pte = walk(p->pagetable, va, 0);
+
+  return (pte != 0) && (*pte & PTE_V) && (*pte & PTE_COW);
+}
+
+// 执行写时复制操作
+int
+uvmcowcopy(uint64 va)
+{
+  uint64 pa, newpa;
+  pte_t *pte;
+  struct proc *p = myproc();
+  uint flags;
+  
+  va = PGROUNDDOWN(va);
+  if((pte = walk(p->pagetable, va, 0)) == 0)
+    panic("uvmcowcopy: pte should exist");
+  
+  pa = PTE2PA(*pte);
+  
+  // 核心逻辑：如果只有一个引用，就地修改；否则，复制。
+  if(PA2PGREF((void*)pa) == 1){
+    // 只有一个引用，无需复制，直接设置为可写
+    flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+    *pte = PA2PTE(pa) | flags;
+    return 0;
+  } else {
+    // 存在多个引用，需要分配新页并复制
+    if((newpa = (uint64)kalloc()) == 0)
+      return -1; // 内存不足
+    
+    PA2PGREF((void*)newpa) = 1; // 新页的引用计数为1
+    memmove((void*)newpa, (void*)pa, PGSIZE);
+
+    // 将当前进程的页表重新映射到新页，并设为可写
+    flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+    uvmunmap(p->pagetable, va, 1, 0); // 解除旧映射(do_free=0)
+    if(mappages(p->pagetable, va, PGSIZE, newpa, flags) != 0) {
+      kfree((void*)newpa);
+      panic("uvmcowcopy: mappages failed");
+    }
+    
+    // 旧页的引用计数减1
+    kfree((void*)pa);
+    return 0;
   }
 }

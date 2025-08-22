@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "kalloc.h"
 
 struct cpu cpus[NCPU];
 
@@ -106,12 +107,19 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
+  p->state = USED;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+    freeproc(p);
     release(&p->lock);
     return 0;
   }
+  // =======================================================
+  // ==  第一处修改：为 trapframe 页初始化引用计数  ==
+  // =======================================================
+  PA2PGREF(p->trapframe) = 1;
+
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -120,6 +128,19 @@ found:
     release(&p->lock);
     return 0;
   }
+
+  // ===================================================================
+  // ==  第二处修改：找到分配 kstack 的地方，并初始化其引用计数  ==
+  // ==  (你的代码片段里没有这部分，但你的文件里一定有)       ==
+  // ===================================================================
+  // Allocate a kernel stack.
+  if((p->kstack = (uint64)kalloc()) == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  PA2PGREF((void*)p->kstack) = 1;
+
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
